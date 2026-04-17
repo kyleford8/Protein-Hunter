@@ -111,6 +111,34 @@ def _chai_apo_tuples(binder_chain: str, binder_seq: str, cyclic: bool) -> List[T
     return [(binder_seq, binder_chain, "protein", {"use_esm": False, "cyclic": cyclic})]
 
 
+def _chai_plddt_per_real_atom(folder: Any, res: Dict[str, Any]):
+    """
+    Chai stores plddt_per_atom over the full padded atom batch; padding often repeats
+    degenerate scores. Restrict to real atoms using atom_exists_mask (matches exported structure).
+    """
+    import torch
+
+    raw = res.get("plddt_per_atom")
+    if raw is None:
+        return np.array([], dtype=np.float32)
+    p = raw.detach().float().reshape(-1)
+    st = getattr(folder, "state", None)
+    bi = getattr(st, "batch_inputs", None) if st is not None else None
+    if not isinstance(bi, dict) or "atom_exists_mask" not in bi:
+        return p.cpu().numpy()
+    mask = bi["atom_exists_mask"]
+    if hasattr(mask, "squeeze"):
+        mask = mask.squeeze(0)
+    m = mask.to(device=p.device, dtype=torch.bool).reshape(-1)
+    n = min(m.numel(), p.numel())
+    if m.numel() != p.numel():
+        print(
+            f"Warning: atom_exists_mask length ({m.numel()}) != plddt_per_atom ({p.numel()}); "
+            f"trimming to {n} for masked export."
+        )
+    return p[:n][m[:n]].cpu().numpy()
+
+
 def run_boltz_validation_step(
     yaml_dir: str,
     ligandmpnn_dir: str,
@@ -253,7 +281,16 @@ def run_boltz_validation_step(
 
     af_pdb_dir = f"{ligandmpnn_dir}/03_af_pdb_success"
     af_pdb_dir_apo = f"{ligandmpnn_dir}/03_af_pdb_apo"
-    convert_cif_files_to_pdb(af_output_dir, af_pdb_dir, af_dir=True, high_iptm=high_iptm)
+    # Cross-validation: YAMLs are already high-ipTM *design* hits. Chai/Boltz ipTM
+    # can be < 0.5 while still being valid folds — use i_ptm_cutoff=0 so every holo
+    # CIF becomes a PDB for Rosetta and holo–apo RMSD (high_iptm=True keeps CSV).
+    convert_cif_files_to_pdb(
+        af_output_dir,
+        af_pdb_dir,
+        af_dir=True,
+        high_iptm=high_iptm,
+        **({"i_ptm_cutoff": 0.0} if high_iptm else {}),
+    )
     if any(Path(af_output_apo_dir).rglob("*.cif")):
         convert_cif_files_to_pdb(af_output_apo_dir, af_pdb_dir_apo, af_dir=True, high_iptm=False)
     else:
@@ -319,7 +356,7 @@ def run_chai_validation_step(
         res = folder.state.result
         iptm_t = res.get("iptm")
         iptm = float(iptm_t.item()) if iptm_t is not None else 0.0
-        atom_plddts = res["plddt_per_atom"].detach().cpu().numpy()
+        atom_plddts = _chai_plddt_per_real_atom(folder, res)
         pae = res["pae"].detach().cpu().numpy() if "pae" in res else None
 
         mmcif_text = cif_path.read_text()
@@ -365,7 +402,7 @@ def run_chai_validation_step(
                     res = folder.state.result
                     iptm_t = res.get("iptm")
                     iptm = float(iptm_t.item()) if iptm_t is not None else 0.0
-                    atom_plddts = res["plddt_per_atom"].detach().cpu().numpy()
+                    atom_plddts = _chai_plddt_per_real_atom(folder, res)
                     pae = res["pae"].detach().cpu().numpy() if "pae" in res else None
                     mmcif_text = cif_path.read_text()
                     _write_af3_style_confidence_artifacts(
@@ -383,7 +420,13 @@ def run_chai_validation_step(
 
     af_pdb_dir = f"{ligandmpnn_dir}/03_af_pdb_success"
     af_pdb_dir_apo = f"{ligandmpnn_dir}/03_af_pdb_apo"
-    convert_cif_files_to_pdb(af_output_dir, af_pdb_dir, af_dir=True, high_iptm=high_iptm)
+    convert_cif_files_to_pdb(
+        af_output_dir,
+        af_pdb_dir,
+        af_dir=True,
+        high_iptm=high_iptm,
+        **({"i_ptm_cutoff": 0.0} if high_iptm else {}),
+    )
     if any(Path(af_output_apo_dir).rglob("*.cif")):
         convert_cif_files_to_pdb(af_output_apo_dir, af_pdb_dir_apo, af_dir=True, high_iptm=False)
     else:
