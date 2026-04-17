@@ -282,6 +282,10 @@ class ProteinHunter_Boltz:
 
     def __init__(self, args):
         self.args = args
+        dval = getattr(args, "downstream_validation", "none")
+        if getattr(args, "use_alphafold3_validation", False) and dval == "none":
+            dval = "alphafold3"
+        self.downstream_validation = dval
         self.device = f"cuda:{args.gpu_id}" if torch.cuda.is_available() else "cpu"
         print("Using device:", self.device)
 
@@ -719,14 +723,12 @@ class ProteinHunter_Boltz:
         print(f"\n✅ All run/cycle metrics saved to {summary_csv}")
 
     def _run_downstream_validation(self):
-        # This ensures they are in scope when called later in this function
-        sys.path.append(os.path.join(os.path.dirname(__file__), "utils"))
-        from utils.alphafold_utils import run_alphafold_step
+        """Executes structure re-prediction (AF3 or Chai cross-val) and Rosetta validation."""
+        sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
         from utils.pyrosetta_utils import run_rosetta_step
-        
-        """Executes AlphaFold and Rosetta validation steps."""
+
         a = self.args
-        
+
         # Determine target type for Rosetta validation
         any_ligand_or_nucleic = a.ligand_smiles or a.ligand_ccd or a.nucleic_seq
         if a.nucleic_type.strip() and a.nucleic_seq.strip():
@@ -734,39 +736,65 @@ class ProteinHunter_Boltz:
         elif any_ligand_or_nucleic:
             target_type = "small_molecule"
         else:
-            target_type = "protein" # Default for unconditional mode
+            target_type = "protein"  # Default for unconditional mode
 
         success_dir = f"{self.save_dir}/1_af3_rosetta_validation"
         high_iptm_yaml_dir = os.path.join(self.save_dir, "high_iptm_yaml")
+        work_dir = os.path.expanduser(a.work_dir) or os.getcwd()
 
-        if os.path.exists(high_iptm_yaml_dir):
-            print("Starting downstream validation (AlphaFold3 and Rosetta)...")
+        if not os.path.exists(high_iptm_yaml_dir):
+            return
 
-            # --- AlphaFold Step ---
-            af_output_dir, af_output_apo_dir, af_pdb_dir, af_pdb_dir_apo = (
-                run_alphafold_step(
-                    high_iptm_yaml_dir,
-                    os.path.expanduser(a.alphafold_dir),
-                    a.af3_docker_name,
-                    os.path.expanduser(a.af3_database_settings),
-                    os.path.expanduser(a.hmmer_path),
-                    success_dir,
-                    os.path.expanduser(a.work_dir) or os.getcwd(),
-                    binder_id=self.binder_chain,
-                    gpu_id=a.gpu_id,
-                    high_iptm=True,
-                    use_msa_for_af3=a.use_msa_for_af3,
-                )
+        mode = self.downstream_validation
+        print(f"Starting downstream validation ({mode}) and Rosetta...")
+
+        af_pdb_dir = af_pdb_dir_apo = None
+        if mode == "alphafold3":
+            from utils.alphafold_utils import run_alphafold_step
+
+            _, _, af_pdb_dir, af_pdb_dir_apo = run_alphafold_step(
+                high_iptm_yaml_dir,
+                os.path.expanduser(a.alphafold_dir),
+                a.af3_docker_name,
+                os.path.expanduser(a.af3_database_settings),
+                os.path.expanduser(a.hmmer_path),
+                success_dir,
+                work_dir,
+                binder_id=self.binder_chain,
+                gpu_id=a.gpu_id,
+                high_iptm=True,
+                use_msa_for_af3=a.use_msa_for_af3,
             )
-            if target_type == "protein":
-                # --- Rosetta Step ---
-                run_rosetta_step(
+        elif mode == "chai":
+            from utils.structure_validation import run_chai_validation_step
+
+            from chai_ph.predict import ChaiFolder
+
+            dev = f"cuda:{a.gpu_id}" if torch.cuda.is_available() else "cpu"
+            chai_folder = ChaiFolder(device=dev)
+            try:
+                _, _, af_pdb_dir, af_pdb_dir_apo = run_chai_validation_step(
+                    high_iptm_yaml_dir,
                     success_dir,
-                    af_pdb_dir,
-                    af_pdb_dir_apo,
+                    chai_folder,
                     binder_id=self.binder_chain,
-                    target_type=target_type,
+                    num_trunk_recycles=a.recycling_steps,
+                    num_diffn_timesteps=a.diffuse_steps,
+                    high_iptm=True,
                 )
+            finally:
+                chai_folder.full_cleanup()
+        else:
+            print(f"Unknown downstream_validation mode: {mode!r}. Skipping.")
+
+        if target_type == "protein" and af_pdb_dir and af_pdb_dir_apo:
+            run_rosetta_step(
+                success_dir,
+                af_pdb_dir,
+                af_pdb_dir_apo,
+                binder_id=self.binder_chain,
+                target_type=target_type,
+            )
 
 
     def run_pipeline(self):
@@ -792,5 +820,5 @@ class ProteinHunter_Boltz:
         self._save_summary_metrics(all_run_metrics)
 
         # 4. Run Downstream Validation
-        if self.args.use_alphafold3_validation:
+        if self.downstream_validation != "none":
             self._run_downstream_validation()

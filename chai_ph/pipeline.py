@@ -840,6 +840,10 @@ class ProteinHunter_Chai:
         self.gpu_id = args.gpu_id
         self.jobname = re.sub(r"\W+", "", self.jobname)
         self.use_alphafold3_validation = args.use_alphafold3_validation
+        dval = getattr(args, "downstream_validation", "none")
+        if getattr(args, "use_alphafold3_validation", False) and dval == "none":
+            dval = "alphafold3"
+        self.downstream_validation = dval
         self.alphafold_dir = args.alphafold_dir
         self.af3_docker_name = args.af3_docker_name
         self.af3_database_settings = args.af3_database_settings
@@ -849,6 +853,11 @@ class ProteinHunter_Chai:
         self.high_iptm_threshold = args.high_iptm_threshold
         self.high_plddt_threshold = args.high_plddt_threshold
         self.plot = args.plot
+        self.boltz_model_path = getattr(
+            args, "boltz_model_path", os.path.expanduser("~/.boltz/boltz2_conf.ckpt")
+        )
+        self.boltz_model_version = getattr(args, "boltz_model_version", "boltz2")
+        self.boltz_ccd_path = getattr(args, "boltz_ccd_path", "~/.boltz/mols")
         self.binder_chain = "A"
         self.target_chain = "B"
 
@@ -993,28 +1002,62 @@ class ProteinHunter_Chai:
         else:
             print("Warning: No successful trials completed.")
 
-        if self.use_alphafold3_validation:
-            sys.path.append(os.path.join(os.path.dirname(__file__), "utils"))
-            from utils.alphafold_utils import run_alphafold_step
+        if self.downstream_validation != "none":
+            sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
             from utils.pyrosetta_utils import run_rosetta_step
+
             high_iptm_yaml_dir = os.path.join(prefix, "high_iptm_yaml")
-            if os.path.exists(high_iptm_yaml_dir) and len(os.listdir(high_iptm_yaml_dir)) > 0:
+            if os.path.exists(high_iptm_yaml_dir) and len(
+                os.listdir(high_iptm_yaml_dir)
+            ) > 0:
                 success_dir = os.path.join(prefix, "1_af3_rosetta_validation")
-                af_output_dir, af_output_apo_dir, af_pdb_dir, af_pdb_dir_apo = run_alphafold_step(
-                    high_iptm_yaml_dir,
-                    self.alphafold_dir,
-                    self.af3_docker_name,
-                    self.af3_database_settings,
-                    self.hmmer_path,
-                    success_dir,
-                    os.path.expanduser(self.work_dir) or os.getcwd(),
-                    binder_id=self.binder_chain,
-                    gpu_id=self.gpu_id,
-                    high_iptm=True,
-                    use_msa_for_af3=self.use_msa_for_af3,
-                )
-                if self.target_entity_type == "protein":
-                    # --- Rosetta Step ---
+                work_dir = os.path.expanduser(self.work_dir) or os.getcwd()
+                mode = self.downstream_validation
+                print(f"Starting downstream validation ({mode}) and Rosetta...")
+
+                af_pdb_dir = af_pdb_dir_apo = None
+                if mode == "alphafold3":
+                    from utils.alphafold_utils import run_alphafold_step
+
+                    _, _, af_pdb_dir, af_pdb_dir_apo = run_alphafold_step(
+                        high_iptm_yaml_dir,
+                        self.alphafold_dir,
+                        self.af3_docker_name,
+                        self.af3_database_settings,
+                        self.hmmer_path,
+                        success_dir,
+                        work_dir,
+                        binder_id=self.binder_chain,
+                        gpu_id=self.gpu_id,
+                        high_iptm=True,
+                        use_msa_for_af3=self.use_msa_for_af3,
+                    )
+                elif mode == "boltz":
+                    from utils.structure_validation import run_boltz_validation_step
+
+                    _, _, af_pdb_dir, af_pdb_dir_apo = run_boltz_validation_step(
+                        high_iptm_yaml_dir,
+                        success_dir,
+                        work_dir,
+                        binder_id=self.binder_chain,
+                        gpu_id=self.gpu_id,
+                        boltz_model_path=self.boltz_model_path,
+                        boltz_model_version=self.boltz_model_version,
+                        diffuse_steps=self.n_diff_steps,
+                        recycling_steps=self.n_recycles,
+                        contact_residues="",
+                        ccd_path=str(self.boltz_ccd_path),
+                        grad_enabled=False,
+                        high_iptm=True,
+                    )
+                else:
+                    print(f"Unknown downstream_validation mode: {mode!r}. Skipping.")
+
+                if (
+                    self.target_entity_type == "protein"
+                    and af_pdb_dir
+                    and af_pdb_dir_apo
+                ):
                     run_rosetta_step(
                         success_dir,
                         af_pdb_dir,

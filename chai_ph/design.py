@@ -145,6 +145,26 @@ def parse_args():
     af_group = parser.add_argument_group("AlphaFold Settings")
     af_group.add_argument("--use_alphafold3_validation", action="store_true", default=False)
     af_group.add_argument(
+        "--downstream_validation",
+        default="none",
+        choices=["none", "alphafold3", "boltz"],
+        help="Re-predict high-ipTM YAMLs: none | alphafold3 (Docker) | boltz (Boltz; cross-validate Chai designs). "
+        "If --use_alphafold3_validation is set and this is none, alphafold3 is used.",
+    )
+    boltz_cv = parser.add_argument_group("Boltz cross-validation (when --downstream_validation boltz)")
+    boltz_cv.add_argument(
+        "--boltz_model_path",
+        default=os.path.expanduser("~/.boltz/boltz2_conf.ckpt"),
+        type=str,
+    )
+    boltz_cv.add_argument("--boltz_model_version", default="boltz2", type=str)
+    boltz_cv.add_argument(
+        "--boltz_ccd_path",
+        default="~/.boltz/mols",
+        type=str,
+        help="CCD library path for Boltz validation.",
+    )
+    af_group.add_argument(
         "--alphafold_dir", default=os.path.expanduser("~/alphafold3"), type=str
     )
     af_group.add_argument("--af3_docker_name", default="alphafold3_yc", type=str)

@@ -101,6 +101,13 @@ def parse_args():
         type=str,
     )
     parser.add_argument("--use_alphafold3_validation", action="store_true", default=False)
+    parser.add_argument(
+        "--downstream_validation",
+        default="none",
+        choices=["none", "alphafold3", "chai"],
+        help="Re-predict high-ipTM YAMLs: none | alphafold3 (Docker) | chai (Chai-1; cross-validate Boltz designs). "
+        "If --use_alphafold3_validation is set and this is none, alphafold3 is used.",
+    )
     parser.add_argument("--use_msa_for_af3", action="store_true")
     parser.add_argument("--work_dir", default="", type=str)
 
