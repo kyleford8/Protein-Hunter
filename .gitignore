@@ -1,0 +1,22 @@
+# Neural network checkpoints / model weights (large binaries; keep out of git)
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.mlmodel
+*.params
+
+# Common weight directories (Boltz, MPNN, custom installs under repo)
+**/model_params/
+**/weights/
+**/checkpoints/
+
+# Hugging Face / transformers-style single-file weights
+**/pytorch_model.bin
+
+# Python bytecode
+__pycache__/
+utils/__pycache__/*
+# Design runs and pipeline artifacts
+outputs/
