@@ -21,7 +21,12 @@ from pyrosetta.rosetta.protocols.simple_moves import AlignChainMover
 from scipy.spatial import cKDTree
 
 from boltz_ph.constants import RESTYPE_3TO1, HYDROPHOBIC_AA
-from utils.metrics import get_CA_and_sequence, np_rmsd, radius_of_gyration
+from utils.metrics import (
+    get_CA_and_sequence,
+    np_rmsd,
+    radius_of_gyration,
+    resolve_binder_chain_for_holo_apo_rmsd,
+)
 
 # Initialize PyRosetta with all needed options
 dalphaball_path = os.path.join(
@@ -647,20 +652,27 @@ def measure_rosetta_energy(
         row = row.copy()
         try:
             cif_path = row['PDB'] + '/' + row['Model']
-            rg, length = radius_of_gyration(cif_path, chain_id=binder_holo_chain)
             model_base = row['Model'].split('relax_')[-1].split('_model.pdb')[0] if row['Model'].startswith('relax') else row['Model'].split('_model.pdb')[0]
             base_path = '/'.join(row['PDB'].split('/')[:-1]) + '/02_design_final_af3/' + model_base
             confidenece_json_1 = f"{base_path}/{model_base}_summary_confidences.json"
             confidenece_json_2 = f"{base_path}/{model_base}_confidences.json"
             af_cif = f"{base_path}/{model_base}_model.cif"
-            aa_seq = get_sequence(af_cif, chain_id=binder_holo_chain)
             if row['Model'].startswith('relax'):
                 af_holo_pdb = pdbs_path + '/' + row['Model'].split('relax_')[1]
                 af_apo_pdb = pdbs_apo_path + '/' + row['Model'].split('relax_')[1]
             else:
                 af_holo_pdb = pdbs_path + '/' + row['Model']
                 af_apo_pdb = pdbs_apo_path + '/' + row['Model']
-            xyz_holo, seq_holo = get_CA_and_sequence(af_holo_pdb, chain_id=binder_holo_chain)
+
+            holo_binder_chain = resolve_binder_chain_for_holo_apo_rmsd(
+                af_holo_pdb,
+                af_apo_pdb,
+                apo_binder_chain=binder_apo_chain,
+                preferred_holo_binder_chain=binder_holo_chain,
+            )
+            rg, length = radius_of_gyration(cif_path, chain_id=holo_binder_chain)
+            aa_seq = get_sequence(af_cif, chain_id=holo_binder_chain)
+            xyz_holo, seq_holo = get_CA_and_sequence(af_holo_pdb, chain_id=holo_binder_chain)
             xyz_apo, seq_apo = get_CA_and_sequence(af_apo_pdb, chain_id=binder_apo_chain)
             rmsd = np_rmsd(xyz_holo, xyz_apo)
             row['apo_holo_rmsd'] = rmsd
@@ -677,11 +689,41 @@ def measure_rosetta_energy(
                     confidence_data = json.load(f)
                     row['plddt'] = np.mean(confidence_data['atom_plddts'])
                     pae_matrix = np.array(confidence_data['pae'])
-                    protein_len = len(aa_seq)
-                    interface_pae1 = np.mean(pae_matrix[:protein_len, protein_len:])
-                    interface_pae2 = np.mean(pae_matrix[protein_len:, :protein_len])
-                    i_pae = (interface_pae1 + interface_pae2) / 2
-                    row['i_pae'] = i_pae
+                    while pae_matrix.ndim > 2:
+                        pae_matrix = pae_matrix[..., 0]
+                    L_b = len(aa_seq)
+                    n_pae = int(pae_matrix.shape[0])
+                    L_t = None
+                    parser = PDBParser(QUIET=True)
+                    holo_model = parser.get_structure("holo_i_pae", af_holo_pdb)[0]
+                    for ch in holo_model:
+                        if ch.id == holo_binder_chain:
+                            continue
+                        try:
+                            xyz_t, _ = get_CA_and_sequence(af_holo_pdb, chain_id=ch.id)
+                        except ValueError:
+                            continue
+                        L_t = int(xyz_t.shape[0])
+                        break
+                    if L_t is not None and n_pae >= L_b + L_t:
+                        m = L_b + L_t
+                        P = pae_matrix[:m, :m]
+                        # Chai prep order is target then binder; AF3/Boltz layouts are often binder-first.
+                        i_t_first = 0.5 * (
+                            float(np.mean(P[:L_t, L_t:]))
+                            + float(np.mean(P[L_t:, :L_t]))
+                        )
+                        i_b_first = 0.5 * (
+                            float(np.mean(P[:L_b, L_b:]))
+                            + float(np.mean(P[L_b:, :L_b]))
+                        )
+                        row["i_pae"] = (
+                            i_t_first
+                            if holo_binder_chain != binder_holo_chain
+                            else i_b_first
+                        )
+                    else:
+                        row["i_pae"] = None
             except Exception:
                 row['plddt'] = None
                 row['i_pae'] = None

@@ -10,7 +10,11 @@ import urllib
 from tqdm import tqdm
 
 from Bio.PDB import PDBParser, MMCIFParser, PDBIO, Selection
-from utils.metrics import get_CA_and_sequence, np_rmsd
+from utils.metrics import (
+    get_CA_and_sequence,
+    np_rmsd,
+    resolve_binder_chain_for_holo_apo_rmsd,
+)
 
 # AlphaFold3 Database Info (to be used by downstream modules)
 RNA_DATABASE_INFO = {
@@ -253,10 +257,16 @@ def calculate_holo_apo_rmsd(af_pdb_dir, af_pdb_dir_apo, binder_chain):
             try:
                 pdb_path = os.path.join(af_pdb_dir, pdb_name)
                 pdb_path_apo = os.path.join(af_pdb_dir_apo, pdb_name)
-                
-                # Apo structure is expected to only contain the binder chain (Chain A after AlphaFold3's logic)
-                xyz_holo, _ = get_CA_and_sequence(pdb_path, chain_id=binder_chain)
-                xyz_apo, _ = get_CA_and_sequence(pdb_path_apo, chain_id="A")
+
+                # Apo is single-chain binder; holo may list target before binder (e.g. Chai).
+                holo_binder_chain = resolve_binder_chain_for_holo_apo_rmsd(
+                    pdb_path,
+                    pdb_path_apo,
+                    apo_binder_chain=binder_chain,
+                    preferred_holo_binder_chain=binder_chain,
+                )
+                xyz_holo, _ = get_CA_and_sequence(pdb_path, chain_id=holo_binder_chain)
+                xyz_apo, _ = get_CA_and_sequence(pdb_path_apo, chain_id=binder_chain)
 
                 # RMSD calculation using the unified utility function
                 rmsd = np_rmsd(xyz_holo, xyz_apo)

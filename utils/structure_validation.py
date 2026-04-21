@@ -174,7 +174,7 @@ def run_boltz_validation_step(
 
     device = f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu"
     ccd_path_exp = os.path.expanduser(ccd_path)
-    ccd_lib = load_canonicals()
+    ccd_lib = load_canonicals(ccd_path_exp)
     predict_args = {
         "recycling_steps": recycling_steps,
         "sampling_steps": diffuse_steps,

@@ -88,6 +88,53 @@ def get_CA_and_sequence(structure_file, chain_id="A"):
     return np.array(xyz), "".join(sequence)
 
 
+def resolve_binder_chain_for_holo_apo_rmsd(
+    holo_path: str,
+    apo_path: str,
+    apo_binder_chain: str = "A",
+    preferred_holo_binder_chain: str = "A",
+) -> str:
+    """
+    Return the holo complex chain id whose CA count matches the apo binder chain.
+
+    Some predictors (e.g. Chai) order entities target-first in the mmCIF/PDB, so chain
+    letter \"A\" may be the target while the designed binder is \"B\". Design-time
+    conventions still use binder=A; this helper picks the holo chain that actually
+    matches the apo structure for holo–apo RMSD.
+    """
+    xyz_apo, _ = get_CA_and_sequence(apo_path, chain_id=apo_binder_chain)
+    n_apo = int(xyz_apo.shape[0])
+    try:
+        xyz_pref, _ = get_CA_and_sequence(holo_path, chain_id=preferred_holo_binder_chain)
+        if int(xyz_pref.shape[0]) == n_apo:
+            return preferred_holo_binder_chain
+    except ValueError:
+        pass
+
+    if holo_path.lower().endswith(".cif"):
+        parser = MMCIFParser(QUIET=True)
+    elif holo_path.lower().endswith(".pdb"):
+        parser = PDBParser(QUIET=True)
+    else:
+        raise ValueError("Holo file must be .cif or .pdb")
+
+    model = parser.get_structure("holo_match", holo_path)[0]
+    for chain in model:
+        cid = chain.id
+        if cid == preferred_holo_binder_chain:
+            continue
+        try:
+            xyz, _ = get_CA_and_sequence(holo_path, chain_id=cid)
+        except ValueError:
+            continue
+        if int(xyz.shape[0]) == n_apo:
+            return cid
+
+    raise ValueError(
+        f"No holo chain with {n_apo} C-alpha atoms (matching apo chain {apo_binder_chain!r}) in {holo_path}"
+    )
+
+
 def radius_of_gyration(path, chain_id="B"):
     """Calculate the Radius of Gyration (Rg) for the CA atoms of a specified chain."""
     if path.lower().endswith(".cif"):

@@ -466,7 +466,16 @@ class ProteinHunter_Boltz:
         run_metrics["cycle_0_iplddt"] = float(
             output.get("complex_iplddt", torch.tensor([0.0])).detach().cpu().numpy()[0]
         )
-        run_metrics["cycle_0_alanine"] = 0
+        cycle_0_seq = ""
+        for seq_entry in data_cp["sequences"]:
+            if (
+                "protein" in seq_entry
+                and self.binder_chain in seq_entry["protein"]["id"]
+            ):
+                cycle_0_seq = seq_entry["protein"]["sequence"]
+                break
+        run_metrics["cycle_0_seq"] = cycle_0_seq
+        run_metrics["cycle_0_alanine"] = cycle_0_seq.count("A")
 
         # --- Optimization Cycles ---
         for cycle in range(a.num_cycles):
